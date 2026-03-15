@@ -26,6 +26,27 @@ log() {
 	printf '[deploy] %s\n' "$*"
 }
 
+is_python_supported() {
+	local py_bin="$1"
+	"${py_bin}" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 8) else 1)
+PY
+}
+
+find_supported_python() {
+	local py
+	for py in python3.11 python3.10 python3.9 python3.8 python3; do
+		local py_bin
+		py_bin="$(command -v "${py}" || true)"
+		if [[ -n "${py_bin}" ]] && is_python_supported "${py_bin}"; then
+			echo "${py_bin}"
+			return 0
+		fi
+	done
+	return 1
+}
+
 CDP_PORT="${CDP_PORT:-9222}"
 API_PORT="${API_PORT:-8787}"
 BIND_ADDRESS="${BIND_ADDRESS:-0.0.0.0}"
@@ -57,7 +78,7 @@ log "Updating dnf metadata..."
 dnf makecache -y
 
 log "Installing system dependencies..."
-dnf install -y curl ca-certificates xz jq python3
+dnf install -y curl ca-certificates xz jq
 
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
 	log "Installing Chromium..."
@@ -86,12 +107,24 @@ if [[ -z "${UV_BIN}" ]]; then
 fi
 log "Using uv binary: ${UV_BIN}"
 
-PYTHON_BIN="$(command -v python3 || true)"
+PYTHON_BIN="$(find_supported_python || true)"
 if [[ -z "${PYTHON_BIN}" ]]; then
-	echo "python3 not found after installation."
+	log "No Python 3.8+ found, installing one via dnf..."
+	for pkg in python3.11 python3.10 python3.9 python3.8 python311 python310 python39 python38; do
+		dnf install -y "${pkg}" >/dev/null 2>&1 || true
+		PYTHON_BIN="$(find_supported_python || true)"
+		if [[ -n "${PYTHON_BIN}" ]]; then
+			break
+		fi
+	done
+fi
+if [[ -z "${PYTHON_BIN}" ]]; then
+	echo "Could not find/install a supported Python (3.8+)."
+	echo "Please install python3.8+ manually, then rerun this script."
 	exit 1
 fi
-log "Using python binary: ${PYTHON_BIN}"
+PYTHON_VER="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
+log "Using python binary: ${PYTHON_BIN} (${PYTHON_VER})"
 
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
 	log "Creating service user: ${SERVICE_USER}"
