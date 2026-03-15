@@ -80,6 +80,40 @@ dnf makecache -y
 log "Installing system dependencies..."
 dnf install -y curl ca-certificates xz jq
 
+log "Installing locale and common font dependencies..."
+dnf install -y fontconfig glibc-langpack-en glibc-langpack-zh || true
+
+install_first_available_package() {
+	local installed_pkg=""
+	local pkg
+	for pkg in "$@"; do
+		if dnf install -y "${pkg}" >/dev/null 2>&1; then
+			installed_pkg="${pkg}"
+			break
+		fi
+	done
+	if [[ -n "${installed_pkg}" ]]; then
+		log "Installed package: ${installed_pkg}"
+		return 0
+	fi
+	return 1
+}
+
+log "Installing CJK fonts (for Chinese text rendering)..."
+if ! install_first_available_package \
+	google-noto-sans-cjk-ttc-fonts \
+	google-noto-sans-cjk-sc-fonts \
+	google-noto-cjk-fonts \
+	wqy-zenhei-fonts \
+	wqy-microhei-fonts; then
+	log "WARNING: Could not install preferred CJK font package from current repositories."
+fi
+
+if command -v fc-cache >/dev/null 2>&1; then
+	log "Refreshing font cache..."
+	fc-cache -f >/dev/null 2>&1 || true
+fi
+
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
 	log "Installing Chromium..."
 	dnf install -y chromium || dnf install -y chromium-browser
@@ -226,7 +260,10 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 Environment=HOME=/var/lib/remote-browser
-ExecStart=${CHROME_BIN} --headless=new --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --no-first-run --no-default-browser-check about:blank
+Environment=LANG=zh_CN.UTF-8
+Environment=LC_ALL=zh_CN.UTF-8
+Environment=LC_CTYPE=zh_CN.UTF-8
+ExecStart=${CHROME_BIN} --headless=new --lang=zh-CN --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --no-first-run --no-default-browser-check about:blank
 Restart=always
 RestartSec=2
 LimitNOFILE=65535
