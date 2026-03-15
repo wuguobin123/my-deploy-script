@@ -226,7 +226,7 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 Environment=HOME=/var/lib/remote-browser
-ExecStart=${CHROME_BIN} --headless=new --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --no-first-run --no-default-browser-check about:blank
+ExecStart=${CHROME_BIN} --headless=new --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --no-first-run --no-default-browser-check about:blank
 Restart=always
 RestartSec=2
 LimitNOFILE=65535
@@ -274,6 +274,14 @@ for i in $(seq 1 30); do
 	fi
 	sleep 1
 done
+
+if command -v ss >/dev/null 2>&1; then
+	LISTEN_ROW="$(ss -lntp 2>/dev/null | awk -v p=":${CDP_PORT}" '$4 ~ p {print $4; exit}')"
+	if [[ -n "${LISTEN_ROW}" && "${LISTEN_ROW}" == "127.0.0.1:${CDP_PORT}" ]]; then
+		log "WARNING: Chromium is listening on 127.0.0.1:${CDP_PORT} only."
+		log "External CDP access may fail. Consider changing BIND_ADDRESS or using a TCP forwarder."
+	fi
+fi
 
 echo
 echo "================ Deployment Complete ================"
