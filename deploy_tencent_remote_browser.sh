@@ -102,6 +102,8 @@ NOVNC_PORT="${NOVNC_PORT:-6080}"
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 SCREEN_RESOLUTION="${SCREEN_RESOLUTION:-1920x1080x24}"
 START_PAGE="${START_PAGE:-data:text/html,%3Chtml%3E%3Cbody%20style=%22font-family:sans-serif;background:%23ffffff;color:%23000000;padding:32px%22%3E%3Ch2%3ERemote%20Browser%20Ready%3C/h2%3E%3Cp%3EWaiting%20for%20CDP%20automation...%3C/p%3E%3C/body%3E%3C/html%3E}"
+# systemd unit files treat "%" as specifier prefix; keep literal "%" by doubling it.
+SYSTEMD_START_PAGE="${START_PAGE//%/%%}"
 BIND_ADDRESS="${BIND_ADDRESS:-0.0.0.0}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/remote-browser}"
 PROFILE_DIR="${PROFILE_DIR:-/var/lib/remote-browser/profile}"
@@ -378,7 +380,7 @@ Environment=DISPLAY=:${DISPLAY_NUM}
 Environment=LANG=zh_CN.UTF-8
 Environment=LC_ALL=zh_CN.UTF-8
 Environment=LC_CTYPE=zh_CN.UTF-8
-ExecStart=${CHROME_BIN} --lang=zh-CN --window-size=1920,1080 --window-position=0,0 --start-maximized --ozone-platform=x11 --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --disable-gpu --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox ${START_PAGE}
+ExecStart=${CHROME_BIN} --lang=zh-CN --window-size=1920,1080 --window-position=0,0 --start-maximized --ozone-platform=x11 --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --disable-gpu --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox ${SYSTEMD_START_PAGE}
 Restart=always
 RestartSec=2
 LimitNOFILE=65535
