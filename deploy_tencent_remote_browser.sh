@@ -57,7 +57,7 @@ log "Updating dnf metadata..."
 dnf makecache -y
 
 log "Installing system dependencies..."
-dnf install -y curl ca-certificates xz jq
+dnf install -y curl ca-certificates xz jq python3
 
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
 	log "Installing Chromium..."
@@ -85,6 +85,13 @@ if [[ -z "${UV_BIN}" ]]; then
 	exit 1
 fi
 log "Using uv binary: ${UV_BIN}"
+
+PYTHON_BIN="$(command -v python3 || true)"
+if [[ -z "${PYTHON_BIN}" ]]; then
+	echo "python3 not found after installation."
+	exit 1
+fi
+log "Using python binary: ${PYTHON_BIN}"
 
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
 	log "Creating service user: ${SERVICE_USER}"
@@ -170,10 +177,8 @@ chmod 600 "${INSTALL_DIR}/remote-browser.env"
 
 log "Creating Python venv with uv..."
 cd "${INSTALL_DIR}"
-"${UV_BIN}" venv --python 3.11
-source "${INSTALL_DIR}/.venv/bin/activate"
-"${UV_BIN}" pip install --upgrade fastapi uvicorn httpx
-deactivate
+"${UV_BIN}" venv --python "${PYTHON_BIN}"
+"${UV_BIN}" pip install --python "${INSTALL_DIR}/.venv/bin/python" --upgrade fastapi uvicorn httpx
 
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
 
@@ -210,7 +215,7 @@ User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/remote-browser.env
-ExecStart=${INSTALL_DIR}/.venv/bin/uvicorn api_server:app --host ${BIND_ADDRESS} --port ${API_PORT}
+ExecStart=${INSTALL_DIR}/.venv/bin/python -m uvicorn api_server:app --host ${BIND_ADDRESS} --port ${API_PORT}
 Restart=always
 RestartSec=2
 
