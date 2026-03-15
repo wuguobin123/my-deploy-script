@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-click deployment for Tencent Cloud Ubuntu/Debian:
+# One-click deployment for TencentOS/CentOS-like systems:
 # - Chromium remote browser (CDP)
 # - FastAPI metadata endpoint with Bearer token auth
 # - systemd services
@@ -48,15 +48,20 @@ if [[ -z "${API_TOKEN}" ]]; then
 	fi
 fi
 
-log "Updating apt indexes..."
-apt-get update -y
+if ! command -v dnf >/dev/null 2>&1; then
+	echo "dnf not found. This script requires TencentOS/CentOS-like system with dnf."
+	exit 1
+fi
+
+log "Updating dnf metadata..."
+dnf makecache -y
 
 log "Installing system dependencies..."
-apt-get install -y curl ca-certificates xz-utils jq
+dnf install -y curl ca-certificates xz jq
 
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
 	log "Installing Chromium..."
-	apt-get install -y chromium-browser || apt-get install -y chromium
+	dnf install -y chromium || dnf install -y chromium-browser
 fi
 
 CHROME_BIN="$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)"
