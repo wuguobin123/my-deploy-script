@@ -18,6 +18,7 @@ set -euo pipefail
 #   NOVNC_PORT=6080
 #   DISPLAY_NUM=99
 #   SCREEN_RESOLUTION=1920x1080x24
+#   START_PAGE=<initial-visible-page-url>
 #   BIND_ADDRESS=0.0.0.0
 #   PUBLIC_HOST=<server-public-ip-or-domain>
 #   API_TOKEN=<custom-bearer-token>
@@ -100,6 +101,7 @@ VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 SCREEN_RESOLUTION="${SCREEN_RESOLUTION:-1920x1080x24}"
+START_PAGE="${START_PAGE:-data:text/html,%3Chtml%3E%3Cbody%20style=%22font-family:sans-serif;background:%23ffffff;color:%23000000;padding:32px%22%3E%3Ch2%3ERemote%20Browser%20Ready%3C/h2%3E%3Cp%3EWaiting%20for%20CDP%20automation...%3C/p%3E%3C/body%3E%3C/html%3E}"
 BIND_ADDRESS="${BIND_ADDRESS:-0.0.0.0}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/remote-browser}"
 PROFILE_DIR="${PROFILE_DIR:-/var/lib/remote-browser/profile}"
@@ -165,14 +167,22 @@ log "Using browser binary: ${CHROME_BIN}"
 log "Installing Xvfb and x11vnc..."
 dnf install -y xorg-x11-server-Xvfb x11vnc
 
+log "Installing a lightweight window manager (openbox/fluxbox)..."
+if ! install_first_available_package openbox fluxbox; then
+	echo "Could not install a lightweight window manager (openbox/fluxbox)."
+	exit 1
+fi
+
 XVFB_BIN="$(command -v Xvfb || true)"
 X11VNC_BIN="$(command -v x11vnc || true)"
-if [[ -z "${XVFB_BIN}" || -z "${X11VNC_BIN}" ]]; then
-	echo "Could not find Xvfb/x11vnc after installation."
+WM_BIN="$(command -v openbox || command -v fluxbox || true)"
+if [[ -z "${XVFB_BIN}" || -z "${X11VNC_BIN}" || -z "${WM_BIN}" ]]; then
+	echo "Could not find Xvfb/x11vnc/window-manager after installation."
 	exit 1
 fi
 log "Using Xvfb binary: ${XVFB_BIN}"
 log "Using x11vnc binary: ${X11VNC_BIN}"
+log "Using window manager binary: ${WM_BIN}"
 
 log "Trying to install noVNC static files via dnf..."
 dnf install -y novnc >/dev/null 2>&1 || dnf install -y noVNC >/dev/null 2>&1 || true
@@ -356,8 +366,8 @@ log "Creating systemd service: remote-chromium.service"
 cat > /etc/systemd/system/remote-chromium.service <<EOF
 [Unit]
 Description=Remote Chromium CDP Service
-After=network.target remote-xvfb.service
-Requires=remote-xvfb.service
+After=network.target remote-xvfb.service remote-wm.service
+Requires=remote-xvfb.service remote-wm.service
 
 [Service]
 Type=simple
@@ -368,10 +378,31 @@ Environment=DISPLAY=:${DISPLAY_NUM}
 Environment=LANG=zh_CN.UTF-8
 Environment=LC_ALL=zh_CN.UTF-8
 Environment=LC_CTYPE=zh_CN.UTF-8
-ExecStart=${CHROME_BIN} --lang=zh-CN --window-size=1920,1080 --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check about:blank
+ExecStart=${CHROME_BIN} --lang=zh-CN --window-size=1920,1080 --window-position=0,0 --start-maximized --ozone-platform=x11 --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --disable-gpu --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --no-first-run --no-default-browser-check --no-sandbox --disable-setuid-sandbox ${START_PAGE}
 Restart=always
 RestartSec=2
 LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+log "Creating systemd service: remote-wm.service"
+cat > /etc/systemd/system/remote-wm.service <<EOF
+[Unit]
+Description=Remote Browser Window Manager Service
+After=remote-xvfb.service
+Requires=remote-xvfb.service
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+Environment=HOME=/var/lib/remote-browser
+Environment=DISPLAY=:${DISPLAY_NUM}
+ExecStart=${WM_BIN}
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
@@ -381,8 +412,8 @@ log "Creating systemd service: remote-vnc.service"
 cat > /etc/systemd/system/remote-vnc.service <<EOF
 [Unit]
 Description=Remote Browser x11vnc Service
-After=remote-xvfb.service remote-chromium.service
-Requires=remote-xvfb.service
+After=remote-xvfb.service remote-wm.service remote-chromium.service
+Requires=remote-xvfb.service remote-wm.service
 
 [Service]
 Type=simple
@@ -450,6 +481,7 @@ fi
 log "Reloading systemd and starting services..."
 systemctl daemon-reload
 systemctl enable --now remote-xvfb.service
+systemctl enable --now remote-wm.service
 systemctl enable --now remote-chromium.service
 systemctl enable --now remote-vnc.service
 systemctl enable --now remote-novnc.service
