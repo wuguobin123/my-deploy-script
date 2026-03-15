@@ -3,6 +3,8 @@ set -euo pipefail
 
 # One-click deployment for TencentOS/CentOS-like systems:
 # - Chromium remote browser (CDP)
+# - Xvfb virtual display
+# - x11vnc + noVNC visualization
 # - FastAPI metadata endpoint with Bearer token auth
 # - systemd services
 #
@@ -12,10 +14,15 @@ set -euo pipefail
 # Optional env vars:
 #   CDP_PORT=9222
 #   API_PORT=8787
+#   VNC_PORT=5900
+#   NOVNC_PORT=6080
+#   DISPLAY_NUM=99
+#   SCREEN_RESOLUTION=1920x1080x24
 #   BIND_ADDRESS=0.0.0.0
 #   PUBLIC_HOST=<server-public-ip-or-domain>
 #   API_TOKEN=<custom-bearer-token>
-#   OPEN_UFW=1  # auto-open API/CDP ports with ufw if installed
+#   VNC_PASSWORD=<custom-vnc-password>
+#   OPEN_UFW=1  # auto-open API/CDP/VNC/noVNC ports with ufw if installed
 
 if [[ "${EUID}" -ne 0 ]]; then
 	echo "Please run as root: sudo bash $0"
@@ -47,42 +54,6 @@ find_supported_python() {
 	return 1
 }
 
-CDP_PORT="${CDP_PORT:-9222}"
-API_PORT="${API_PORT:-8787}"
-BIND_ADDRESS="${BIND_ADDRESS:-0.0.0.0}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/remote-browser}"
-PROFILE_DIR="${PROFILE_DIR:-/var/lib/remote-browser/profile}"
-SERVICE_USER="${SERVICE_USER:-remote-browser}"
-
-DETECTED_IP="$(curl -4fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
-if [[ -z "${DETECTED_IP}" ]]; then
-	DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-fi
-PUBLIC_HOST="${PUBLIC_HOST:-${DETECTED_IP:-127.0.0.1}}"
-
-API_TOKEN="${API_TOKEN:-}"
-if [[ -z "${API_TOKEN}" ]]; then
-	if command -v openssl >/dev/null 2>&1; then
-		API_TOKEN="$(openssl rand -hex 24)"
-	else
-		API_TOKEN="$(date +%s | sha256sum | awk '{print $1}')"
-	fi
-fi
-
-if ! command -v dnf >/dev/null 2>&1; then
-	echo "dnf not found. This script requires TencentOS/CentOS-like system with dnf."
-	exit 1
-fi
-
-log "Updating dnf metadata..."
-dnf makecache -y
-
-log "Installing system dependencies..."
-dnf install -y curl ca-certificates xz jq
-
-log "Installing locale and common font dependencies..."
-dnf install -y fontconfig glibc-langpack-en glibc-langpack-zh || true
-
 install_first_available_package() {
 	local installed_pkg=""
 	local pkg
@@ -98,6 +69,71 @@ install_first_available_package() {
 	fi
 	return 1
 }
+
+resolve_novnc_web_dir() {
+	local d
+	for d in \
+		"/usr/share/novnc" \
+		"/usr/share/novnc/noVNC" \
+		"/usr/share/novnc/www" \
+		"${INSTALL_DIR}/noVNC"; do
+		if [[ -f "${d}/vnc.html" ]]; then
+			echo "${d}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+make_random_secret() {
+	local length="$1"
+	if command -v openssl >/dev/null 2>&1; then
+		openssl rand -hex 96 | cut -c1-"${length}"
+	else
+		date +%s%N | sha256sum | awk '{print $1}' | head -c "${length}"
+	fi
+}
+
+CDP_PORT="${CDP_PORT:-9222}"
+API_PORT="${API_PORT:-8787}"
+VNC_PORT="${VNC_PORT:-5900}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+DISPLAY_NUM="${DISPLAY_NUM:-99}"
+SCREEN_RESOLUTION="${SCREEN_RESOLUTION:-1920x1080x24}"
+BIND_ADDRESS="${BIND_ADDRESS:-0.0.0.0}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/remote-browser}"
+PROFILE_DIR="${PROFILE_DIR:-/var/lib/remote-browser/profile}"
+SERVICE_USER="${SERVICE_USER:-remote-browser}"
+
+DETECTED_IP="$(curl -4fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+if [[ -z "${DETECTED_IP}" ]]; then
+	DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+fi
+PUBLIC_HOST="${PUBLIC_HOST:-${DETECTED_IP:-127.0.0.1}}"
+
+API_TOKEN="${API_TOKEN:-}"
+if [[ -z "${API_TOKEN}" ]]; then
+	API_TOKEN="$(make_random_secret 48)"
+fi
+
+VNC_PASSWORD="${VNC_PASSWORD:-}"
+if [[ -z "${VNC_PASSWORD}" ]]; then
+	VNC_PASSWORD="$(make_random_secret 12)"
+fi
+
+if ! command -v dnf >/dev/null 2>&1; then
+	echo "dnf not found. This script requires TencentOS/CentOS-like system with dnf."
+	exit 1
+fi
+
+log "Updating dnf metadata..."
+dnf makecache -y
+
+log "Installing system dependencies..."
+dnf install -y curl ca-certificates xz jq tar
+
+log "Installing locale and common font dependencies..."
+dnf install -y fontconfig glibc-langpack-en glibc-langpack-zh || true
 
 log "Installing CJK fonts (for Chinese text rendering)..."
 if ! install_first_available_package \
@@ -125,6 +161,21 @@ if [[ -z "${CHROME_BIN}" ]]; then
 	exit 1
 fi
 log "Using browser binary: ${CHROME_BIN}"
+
+log "Installing Xvfb and x11vnc..."
+dnf install -y xorg-x11-server-Xvfb x11vnc
+
+XVFB_BIN="$(command -v Xvfb || true)"
+X11VNC_BIN="$(command -v x11vnc || true)"
+if [[ -z "${XVFB_BIN}" || -z "${X11VNC_BIN}" ]]; then
+	echo "Could not find Xvfb/x11vnc after installation."
+	exit 1
+fi
+log "Using Xvfb binary: ${XVFB_BIN}"
+log "Using x11vnc binary: ${X11VNC_BIN}"
+
+log "Trying to install noVNC static files via dnf..."
+dnf install -y novnc >/dev/null 2>&1 || dnf install -y noVNC >/dev/null 2>&1 || true
 
 if ! command -v uv >/dev/null 2>&1; then
 	log "Installing uv..."
@@ -165,8 +216,9 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
 	useradd --system --create-home --home-dir /var/lib/remote-browser --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
 
-mkdir -p "${INSTALL_DIR}" "${PROFILE_DIR}"
+mkdir -p "${INSTALL_DIR}" "${PROFILE_DIR}" /var/lib/remote-browser/.vnc
 chown -R "${SERVICE_USER}:${SERVICE_USER}" /var/lib/remote-browser
+chmod 700 /var/lib/remote-browser/.vnc
 
 log "Creating API server code..."
 cat > "${INSTALL_DIR}/api_server.py" <<'PY'
@@ -245,14 +297,46 @@ chmod 600 "${INSTALL_DIR}/remote-browser.env"
 log "Creating Python venv with uv..."
 cd "${INSTALL_DIR}"
 "${UV_BIN}" venv --python "${PYTHON_BIN}"
-"${UV_BIN}" pip install --python "${INSTALL_DIR}/.venv/bin/python" --upgrade fastapi uvicorn httpx
+"${UV_BIN}" pip install --python "${INSTALL_DIR}/.venv/bin/python" --upgrade fastapi uvicorn httpx websockify
+
+WEBSOCKIFY_BIN="$(command -v websockify || true)"
+if [[ -z "${WEBSOCKIFY_BIN}" && -x "${INSTALL_DIR}/.venv/bin/websockify" ]]; then
+	WEBSOCKIFY_BIN="${INSTALL_DIR}/.venv/bin/websockify"
+fi
+if [[ -z "${WEBSOCKIFY_BIN}" ]]; then
+	echo "websockify is not available."
+	exit 1
+fi
+log "Using websockify binary: ${WEBSOCKIFY_BIN}"
+
+NOVNC_WEB_DIR="$(resolve_novnc_web_dir || true)"
+if [[ -z "${NOVNC_WEB_DIR}" ]]; then
+	log "noVNC package not found, downloading noVNC release..."
+	NOVNC_TARBALL="/tmp/novnc-v1.5.0.tar.gz"
+	curl -fsSL "https://github.com/novnc/noVNC/archive/refs/tags/v1.5.0.tar.gz" -o "${NOVNC_TARBALL}"
+	rm -rf "${INSTALL_DIR}/noVNC"
+	tar -xzf "${NOVNC_TARBALL}" -C "${INSTALL_DIR}"
+	mv "${INSTALL_DIR}"/noVNC-* "${INSTALL_DIR}/noVNC"
+	NOVNC_WEB_DIR="${INSTALL_DIR}/noVNC"
+fi
+if [[ ! -f "${NOVNC_WEB_DIR}/vnc.html" ]]; then
+	echo "Could not resolve noVNC web assets directory."
+	exit 1
+fi
+log "Using noVNC web dir: ${NOVNC_WEB_DIR}"
+
+VNC_PASS_FILE="/var/lib/remote-browser/.vnc/passwd"
+log "Generating VNC password file..."
+"${X11VNC_BIN}" -storepasswd "${VNC_PASSWORD}" "${VNC_PASS_FILE}" >/dev/null 2>&1
+chmod 600 "${VNC_PASS_FILE}"
+chown "${SERVICE_USER}:${SERVICE_USER}" "${VNC_PASS_FILE}"
 
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
 
-log "Creating systemd service: remote-chromium.service"
-cat > /etc/systemd/system/remote-chromium.service <<EOF
+log "Creating systemd service: remote-xvfb.service"
+cat > /etc/systemd/system/remote-xvfb.service <<EOF
 [Unit]
-Description=Remote Chromium CDP Service
+Description=Remote Browser Xvfb Display Service
 After=network.target
 
 [Service]
@@ -260,13 +344,75 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 Environment=HOME=/var/lib/remote-browser
+ExecStart=${XVFB_BIN} :${DISPLAY_NUM} -screen 0 ${SCREEN_RESOLUTION} -ac +extension RANDR -nolisten tcp -dpi 96
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+log "Creating systemd service: remote-chromium.service"
+cat > /etc/systemd/system/remote-chromium.service <<EOF
+[Unit]
+Description=Remote Chromium CDP Service
+After=network.target remote-xvfb.service
+Requires=remote-xvfb.service
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+Environment=HOME=/var/lib/remote-browser
+Environment=DISPLAY=:${DISPLAY_NUM}
 Environment=LANG=zh_CN.UTF-8
 Environment=LC_ALL=zh_CN.UTF-8
 Environment=LC_CTYPE=zh_CN.UTF-8
-ExecStart=${CHROME_BIN} --headless=new --lang=zh-CN --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --no-first-run --no-default-browser-check about:blank
+ExecStart=${CHROME_BIN} --lang=zh-CN --window-size=1920,1080 --remote-debugging-address=${BIND_ADDRESS} --remote-debugging-port=${CDP_PORT} --remote-allow-origins=* --user-data-dir=${PROFILE_DIR} --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check about:blank
 Restart=always
 RestartSec=2
 LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+log "Creating systemd service: remote-vnc.service"
+cat > /etc/systemd/system/remote-vnc.service <<EOF
+[Unit]
+Description=Remote Browser x11vnc Service
+After=remote-xvfb.service remote-chromium.service
+Requires=remote-xvfb.service
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+Environment=HOME=/var/lib/remote-browser
+Environment=DISPLAY=:${DISPLAY_NUM}
+ExecStart=${X11VNC_BIN} -display :${DISPLAY_NUM} -rfbport ${VNC_PORT} -rfbauth ${VNC_PASS_FILE} -listen ${BIND_ADDRESS} -forever -shared -noxrecord -noxfixes -noxdamage
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+log "Creating systemd service: remote-novnc.service"
+cat > /etc/systemd/system/remote-novnc.service <<EOF
+[Unit]
+Description=Remote Browser noVNC Service
+After=remote-vnc.service
+Requires=remote-vnc.service
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${NOVNC_WEB_DIR}
+ExecStart=${WEBSOCKIFY_BIN} --web=${NOVNC_WEB_DIR} ${BIND_ADDRESS}:${NOVNC_PORT} 127.0.0.1:${VNC_PORT}
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
@@ -294,14 +440,19 @@ WantedBy=multi-user.target
 EOF
 
 if [[ "${OPEN_UFW:-0}" == "1" ]] && command -v ufw >/dev/null 2>&1; then
-	log "Opening firewall ports with ufw: ${CDP_PORT}, ${API_PORT}"
+	log "Opening firewall ports with ufw: ${CDP_PORT}, ${API_PORT}, ${VNC_PORT}, ${NOVNC_PORT}"
 	ufw allow "${CDP_PORT}"/tcp || true
 	ufw allow "${API_PORT}"/tcp || true
+	ufw allow "${VNC_PORT}"/tcp || true
+	ufw allow "${NOVNC_PORT}"/tcp || true
 fi
 
 log "Reloading systemd and starting services..."
 systemctl daemon-reload
+systemctl enable --now remote-xvfb.service
 systemctl enable --now remote-chromium.service
+systemctl enable --now remote-vnc.service
+systemctl enable --now remote-novnc.service
 systemctl enable --now remote-browser-api.service
 
 log "Waiting for Chromium CDP endpoint..."
@@ -312,12 +463,21 @@ for i in $(seq 1 30); do
 	sleep 1
 done
 
-if command -v ss >/dev/null 2>&1; then
-	LISTEN_ROW="$(ss -lntp 2>/dev/null | awk -v p=":${CDP_PORT}" '$4 ~ p {print $4; exit}')"
-	if [[ -n "${LISTEN_ROW}" && "${LISTEN_ROW}" == "127.0.0.1:${CDP_PORT}" ]]; then
-		log "WARNING: Chromium is listening on 127.0.0.1:${CDP_PORT} only."
-		log "External CDP access may fail. Consider changing BIND_ADDRESS or using a TCP forwarder."
+log "Waiting for noVNC endpoint..."
+for i in $(seq 1 30); do
+	if curl -fsS "http://127.0.0.1:${NOVNC_PORT}/vnc.html" >/dev/null 2>&1; then
+		break
 	fi
+	sleep 1
+done
+
+if command -v ss >/dev/null 2>&1; then
+	for port in "${CDP_PORT}" "${API_PORT}" "${VNC_PORT}" "${NOVNC_PORT}"; do
+		LISTEN_ROW="$(ss -lntp 2>/dev/null | awk -v p=":${port}" '$4 ~ p {print $4; exit}')"
+		if [[ -n "${LISTEN_ROW}" && "${LISTEN_ROW}" == "127.0.0.1:${port}" ]]; then
+			log "WARNING: service on port ${port} is listening on 127.0.0.1 only."
+		fi
+	done
 fi
 
 echo
@@ -330,6 +490,13 @@ echo "  http://${PUBLIC_HOST}:${API_PORT}/v1/browser/info"
 echo
 echo "CDP Endpoint (for browser-use):"
 echo "  http://${PUBLIC_HOST}:${CDP_PORT}"
+echo
+echo "VNC Endpoint:"
+echo "  ${PUBLIC_HOST}:${VNC_PORT}"
+echo "  Password: ${VNC_PASSWORD}"
+echo
+echo "noVNC URL (open in local browser):"
+echo "  http://${PUBLIC_HOST}:${NOVNC_PORT}/vnc.html?host=${PUBLIC_HOST}&port=${NOVNC_PORT}"
 echo
 echo "Bearer Token:"
 echo "  ${API_TOKEN}"
